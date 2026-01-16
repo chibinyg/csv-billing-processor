@@ -6,88 +6,67 @@ import {
     Stack,
     Divider,
     LinearProgress,
-    List,
-    ListItem,
-    ListItemText,
 } from "@mui/material"
 import UploadFileIcon from "@mui/icons-material/UploadFile"
 import DownloadIcon from "@mui/icons-material/Download"
 import { useState } from "react"
 
-const API_URL = "https://o9tfc1nqbh.execute-api.us-west-2.amazonaws.com/dev"
+// API endpoint for CSV to Excel conversion
+const API_URL = "https://r01s9indk6.execute-api.us-west-2.amazonaws.com/prod"
 
+/**
+ * Body component - Main UI for CSV to Excel file conversion
+ * Handles file selection, upload, conversion via API, and download of converted file
+ */
 const Body = () => {
-    const [files, setFiles] = useState([])
+    // State for selected file, loading status, error messages, and converted result
+    const [file, setFile] = useState(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState("")
-    const [convertedFiles, setConvertedFiles] = useState([])
+    const [convertedFile, setConvertedFile] = useState(null)
 
+    // Handles file input change - resets previous state when new file is selected
     const handleFileChange = (e) => {
-        setFiles([...e.target.files])
+        setFile(e.target.files[0] || null)
         setError("")
-        setConvertedFiles([])
+        setConvertedFile(null)
     }
 
+    // Handles file conversion by sending the selected file to the API
     const handleConvert = async () => {
-        if (files.length === 0) {
-            setError("Please select at least one file")
-            return
-        }
-
+        // Show loading state and reset previous errors/results
         setLoading(true)
         setError("")
-        setConvertedFiles([])
+        setConvertedFile(null)
 
         try {
+            // Prepare form data with the selected file and send file as multipart/form-data
             const formData = new FormData()
-            for (const file of files) {
-                formData.append('files', file)
-            }
-
+            formData.append('file', file)
+            
+            // Send POST request to API with Accept header for binary response
             const response = await fetch(API_URL, {
                 method: "POST",
                 body: formData,
-                // Don't set Content-Type - browser sets it automatically with boundary
+                headers: {
+                    'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                }
             })
 
+            // Check if response is successful
             if (!response.ok) {
                 throw new Error(`Conversion failed: ${response.statusText}`)
             }
 
-            const contentType = response.headers.get('content-type')
+            // successful response - get converted file as binary blob
+            const blob = await response.blob()
 
-            if (contentType?.includes('application/zip')) {
-                // Multiple files returned as ZIP
-                const blob = await response.blob()
-                setConvertedFiles([{
-                    filename: 'converted_files.zip',
-                    blob: blob,
-                    originalName: 'Multiple files'
-                }])
-            } else if (contentType?.includes('application/vnd.openxmlformats')) {
-                // Single Excel file
-                const blob = await response.blob()
-                const filename = response.headers.get('content-disposition')
-                    ?.match(/filename="?(.+)"?/)?.[1] || 'converted.xlsx'
-                setConvertedFiles([{
-                    filename: filename,
-                    blob: blob,
-                    originalName: files[0].name
-                }])
-            } else {
-                // JSON response fallback
-                const responseData = await response.json()
-                let result = typeof responseData.body === 'string'
-                    ? JSON.parse(responseData.body)
-                    : responseData.body || responseData
+            // Extract filename from response headers or default to original name with .xlsx extension
+            const filename = response.headers.get('content-disposition')
+                ?.match(/filename="([^"]+)"/)?.[1] || file.name.replace(/\.(csv|txt)$/i, '.xlsx')
 
-                const results = Array.isArray(result) ? result : [result]
-                setConvertedFiles(results.map((r, i) => ({
-                    filename: r.filename,
-                    excelData: r.excelData,
-                    originalName: files[i]?.name || r.originalName
-                })))
-            }
+            // Store converted file in state
+            setConvertedFile({ filename, blob })
         } catch (err) {
             setError(err.message || "An error occurred during conversion")
             console.error("Conversion error:", err)
@@ -96,37 +75,17 @@ const Body = () => {
         }
     }
 
-    const handleDownloadSingle = (file) => {
-        let blob
-        if (file.blob) {
-            blob = file.blob
-        } else {
-            // Fallback for base64 data
-            const byteCharacters = atob(file.excelData)
-            const byteNumbers = new Array(byteCharacters.length)
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i)
-            }
-            const byteArray = new Uint8Array(byteNumbers)
-            blob = new Blob([byteArray], {
-                type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            })
-        }
-        const url = window.URL.createObjectURL(blob)
+    // Triggers download of the converted file using a temporary anchor element
+    const handleDownload = () => {
+        if (!convertedFile) return
+        const url = URL.createObjectURL(convertedFile.blob)
         const link = document.createElement("a")
         link.href = url
-        link.download = file.filename
+        link.download = convertedFile.filename
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
-        window.URL.revokeObjectURL(url)
-    }
-
-    const handleDownloadAll = async () => {
-        for (const file of convertedFiles) {
-            handleDownloadSingle(file)
-            await new Promise(resolve => setTimeout(resolve, 300))
-        }
+        URL.revokeObjectURL(url)
     }
 
     return (
@@ -146,7 +105,7 @@ const Body = () => {
                     textAlign="center"
                     gutterBottom
                 >
-                    Please upload one or more CSV files to convert them into Excel format.
+                    Upload a CSV file to convert it to Excel format.
                 </Typography>
 
                 <Divider sx={{ my: 3 }} />
@@ -158,39 +117,26 @@ const Body = () => {
                         startIcon={<UploadFileIcon />}
                         size="large"
                     >
-                        Select Files
+                        Select File
                         <input
                             type="file"
                             hidden
-                            multiple
                             accept=".csv,.txt,text/csv,text/plain"
                             onChange={handleFileChange}
                         />
                     </Button>
 
-                    {files.length > 0 && (
-                        <>
-                            <Typography variant="body2" color="text.secondary">
-                                {files.length} file(s) selected
-                            </Typography>
-                            <List dense sx={{ width: '100%', maxHeight: 200, overflow: 'auto' }}>
-                                {files.map((file, idx) => (
-                                    <ListItem key={idx}>
-                                        <ListItemText
-                                            primary={file.name}
-                                            secondary={`${(file.size / 1024).toFixed(2)} KB`}
-                                        />
-                                    </ListItem>
-                                ))}
-                            </List>
-                        </>
+                    {file && (
+                        <Typography variant="body2" color="text.secondary">
+                            {file.name} ({(file.size / 1024).toFixed(2)} KB)
+                        </Typography>
                     )}
 
                     {loading && (
                         <>
                             <LinearProgress sx={{ width: "100%" }} />
                             <Typography variant="body2" color="text.secondary">
-                                Converting files...
+                                Converting...
                             </Typography>
                         </>
                     )}
@@ -205,40 +151,21 @@ const Body = () => {
                         variant="contained"
                         size="large"
                         onClick={handleConvert}
-                        disabled={loading || files.length === 0}
+                        disabled={loading || !file}
                     >
                         {loading ? "Converting..." : "Convert to Excel"}
                     </Button>
 
-                    {convertedFiles.length > 0 && (
-                        <>
-                            {convertedFiles.length === 1 ? (
-                                <Button
-                                    variant="contained"
-                                    color="success"
-                                    size="large"
-                                    startIcon={<DownloadIcon />}
-                                    onClick={() => handleDownloadSingle(convertedFiles[0])}
-                                >
-                                    Download {convertedFiles[0].filename}
-                                </Button>
-                            ) : (
-                                <>
-                                    <Typography variant="body2" color="success.main">
-                                        ✓ {convertedFiles.length} files converted successfully
-                                    </Typography>
-                                    <Button
-                                        variant="contained"
-                                        color="success"
-                                        size="large"
-                                        startIcon={<DownloadIcon />}
-                                        onClick={handleDownloadAll}
-                                    >
-                                        Download All Files
-                                    </Button>
-                                </>
-                            )}
-                        </>
+                    {convertedFile && (
+                        <Button
+                            variant="contained"
+                            color="success"
+                            size="large"
+                            startIcon={<DownloadIcon />}
+                            onClick={handleDownload}
+                        >
+                            Download {convertedFile.filename}
+                        </Button>
                     )}
                 </Stack>
             </Paper>
