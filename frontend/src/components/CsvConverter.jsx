@@ -13,34 +13,42 @@ import UploadFileIcon from "@mui/icons-material/UploadFile"
 import DownloadIcon from "@mui/icons-material/Download"
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile"
 import { useState } from "react"
+import JSZip from "jszip"
 
 // API endpoint for CSV to Excel conversion
 const API_URL = import.meta.env.VITE_API_URL
 
-/**
- * CsvConverter component - Main UI for CSV to Excel file conversion
- * Handles file selection, upload, conversion via API, and download of converted file
- */
 const CsvConverter = () => {
-    // State for selected file, loading status, error messages, and converted result
-    const [file, setFile] = useState(null)
+    // State for selected files, loading status, error messages, and converted results
+    const [files, setFiles] = useState([])
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState("")
-    const [convertedFile, setConvertedFile] = useState(null)
+    const [convertedFiles, setConvertedFiles] = useState([])
     const [isDragging, setIsDragging] = useState(false)
+    const [progress, setProgress] = useState({ current: 0, total: 0 })
 
-    // Handles file input change - resets previous state when new file is selected
+    // Handles file input change - adds new files to existing selection
     const handleFileChange = (e) => {
-        setFile(e.target.files[0] || null)
-        setError("")
-        setConvertedFile(null)
+        const newFiles = Array.from(e.target.files).filter(isValidFileType)
+        if (newFiles.length > 0) {
+            setFiles(prev => [...prev, ...newFiles])
+            setError("")
+            setConvertedFiles([])
+        }
+        e.target.value = ""
     }
 
-    // Clears the selected file
-    const handleClearFile = () => {
-        setFile(null)
+    // Clears a specific file by index
+    const handleClearFile = (index) => {
+        setFiles(prev => prev.filter((_, i) => i !== index))
+        setConvertedFiles([])
+    }
+
+    // Clears all files
+    const handleClearAll = () => {
+        setFiles([])
         setError("")
-        setConvertedFile(null)
+        setConvertedFiles([])
     }
 
     // Validates if a file is an accepted type
@@ -63,55 +71,64 @@ const CsvConverter = () => {
         setIsDragging(false)
     }
 
-    // Handles file drop
+    // Handles file drop - supports multiple files
     const handleDrop = (e) => {
         e.preventDefault()
         setIsDragging(false)
-        const droppedFile = e.dataTransfer.files[0]
-        if (droppedFile && isValidFileType(droppedFile)) {
-            setFile(droppedFile)
+        const droppedFiles = Array.from(e.dataTransfer.files)
+        const validFiles = droppedFiles.filter(isValidFileType)
+        const invalidCount = droppedFiles.length - validFiles.length
+
+        if (validFiles.length > 0) {
+            setFiles(prev => [...prev, ...validFiles])
+            setConvertedFiles([])
+        }
+        if (invalidCount > 0) {
+            setError(`${invalidCount} file(s) skipped - only CSV and TXT files are accepted`)
+        } else {
             setError("")
-            setConvertedFile(null)
-        } else if (droppedFile) {
-            setError("Please drop a CSV or TXT file")
         }
     }
 
-    // Handles file conversion by sending the selected file to the API
+    // Converts a single file and returns the result
+    const convertFile = async (file) => {
+        const formData = new FormData()
+        formData.append('file', file)
+
+        const response = await fetch(API_URL, {
+            method: "POST",
+            body: formData,
+            headers: {
+                'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            }
+        })
+
+        if (!response.ok) {
+            throw new Error(`Failed to convert ${file.name}: ${response.statusText}`)
+        }
+
+        const blob = await response.blob()
+        const filename = response.headers.get('content-disposition')
+            ?.match(/filename="([^"]+)"/)?.[1] || file.name.replace(/\.(csv|txt)$/i, '.xlsx')
+
+        return { filename, blob }
+    }
+
+    // Handles conversion of all files in parallel
     const handleConvert = async () => {
-        // Show loading state and reset previous errors/results
         setLoading(true)
         setError("")
-        setConvertedFile(null)
+        setConvertedFiles([])
+        setProgress({ current: 0, total: files.length })
 
         try {
-            // Prepare form data with the selected file and send file as multipart/form-data
-            const formData = new FormData()
-            formData.append('file', file)
-            
-            // Send POST request to API with Accept header for binary response
-            const response = await fetch(API_URL, {
-                method: "POST",
-                body: formData,
-                headers: {
-                    'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                }
-            })
-
-            // Check if response is successful
-            if (!response.ok) {
-                throw new Error(`Conversion failed: ${response.statusText}`)
+            const results = []
+            for (let i = 0; i < files.length; i++) {
+                const result = await convertFile(files[i])
+                results.push(result)
+                setProgress({ current: i + 1, total: files.length })
             }
-
-            // successful response - get converted file as binary blob
-            const blob = await response.blob()
-
-            // Extract filename from response headers or default to original name with .xlsx extension
-            const filename = response.headers.get('content-disposition')
-                ?.match(/filename="([^"]+)"/)?.[1] || file.name.replace(/\.(csv|txt)$/i, '.xlsx')
-
-            // Store converted file in state
-            setConvertedFile({ filename, blob })
+            setConvertedFiles(results)
         } catch (err) {
             setError(err.message || "An error occurred during conversion")
             console.error("Conversion error:", err)
@@ -120,29 +137,47 @@ const CsvConverter = () => {
         }
     }
 
-    // Triggers download of the converted file using a temporary anchor element
-    const handleDownload = () => {
-        if (!convertedFile) return
-        const url = URL.createObjectURL(convertedFile.blob)
-        const link = document.createElement("a")
-        link.href = url
-        link.download = convertedFile.filename
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        URL.revokeObjectURL(url)
+    // Triggers download - single file as xlsx, multiple files as zip
+    const handleDownload = async () => {
+        if (convertedFiles.length === 0) return
+
+        if (convertedFiles.length === 1) {
+            const { filename, blob } = convertedFiles[0]
+            const url = URL.createObjectURL(blob)
+            const link = document.createElement("a")
+            link.href = url
+            link.download = filename
+            document.body.appendChild(link)
+            link.click()
+            document.body.removeChild(link)
+            URL.revokeObjectURL(url)
+        } else {
+            const zip = new JSZip()
+            convertedFiles.forEach(({ filename, blob }) => {
+                zip.file(filename, blob)
+            })
+            const zipBlob = await zip.generateAsync({ type: "blob" })
+            const url = URL.createObjectURL(zipBlob)
+            const link = document.createElement("a")
+            link.href = url
+            link.download = "converted_files.zip"
+            document.body.appendChild(link)
+            link.click()
+            document.body.removeChild(link)
+            URL.revokeObjectURL(url)
+        }
     }
 
     return (
         <Container maxWidth="md" sx={{ mt: 6, mb: 6, flexGrow: 1 }}>
             <Paper elevation={3} sx={{ p: 3 }}>
                 <Typography
-                    variant="h4"
+                    variant="h6"
                     component="h1"
                     gutterBottom
                     textAlign="center"
                 >
-                    CSV to Excel Converter
+                    Upload CSV files and download as Excel
                 </Typography>
                 <Typography
                     variant="body1"
@@ -150,65 +185,81 @@ const CsvConverter = () => {
                     textAlign="center"
                     gutterBottom
                 >
-                    Upload a CSV file to convert it to Excel format.
+                    Fast CSV to Excel conversion
                 </Typography>
 
                 <Divider sx={{ my: 3 }} />
 
                 <Stack spacing={3} alignItems="center">
-                    {!file ? (
-                        <Box
-                            onDragOver={handleDragOver}
-                            onDragLeave={handleDragLeave}
-                            onDrop={handleDrop}
-                            sx={{
-                                border: '2px dashed',
-                                borderColor: isDragging ? 'primary.main' : 'grey.400',
-                                borderRadius: 5,
-                                p: 2,
-                                textAlign: 'center',
-                                bgcolor: isDragging ? 'action.hover' : 'transparent',
-                                transition: 'all 0.2s ease',
-                                cursor: 'pointer',
-                                maxWidth: 400,
-                            }}
-                        >
-                            <UploadFileIcon sx={{ fontSize: 48, color: 'grey.500', mb: 1 }} />
-                            <Typography variant="body1" color="text.secondary" gutterBottom>
-                                Drag and drop your file here
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                                or
-                            </Typography>
-                            <Button
-                                variant="outlined"
-                                component="label"
-                                size="large"
-                            >
-                                Browse Files
-                                <input
-                                    type="file"
-                                    hidden
-                                    accept=".csv,.txt,text/csv,text/plain"
-                                    onChange={handleFileChange}
-                                />
-                            </Button>
-                        </Box>
-                    ) : (
-                        <Chip
-                            icon={<InsertDriveFileIcon />}
-                            label={`${file.name} (${(file.size / 1024).toFixed(2)} KB)`}
-                            onDelete={handleClearFile}
-                            color="primary"
+                    <Box
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                        sx={{
+                            border: '2px dashed',
+                            borderColor: isDragging ? 'primary.main' : 'grey.400',
+                            borderRadius: 5,
+                            p: 4,
+                            textAlign: 'center',
+                            bgcolor: isDragging ? 'action.hover' : 'transparent',
+                            transition: 'all 0.2s ease',
+                            cursor: 'pointer',
+                            maxWidth: 400,
+                        }}
+                    >
+                        <UploadFileIcon sx={{ fontSize: 48, color: 'grey.500', mb: 1 }} />
+                        <Typography variant="body1" color="text.secondary" gutterBottom>
+                            Drop your files here (.csv, .txt)
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                            or
+                        </Typography>
+                        <Button
                             variant="outlined"
-                        />
+                            component="label"
+                            size="large"
+                        >
+                            Browse Files
+                            <input
+                                type="file"
+                                hidden
+                                multiple
+                                accept=".csv,.txt,text/csv,text/plain"
+                                onChange={handleFileChange}
+                            />
+                        </Button>
+                    </Box>
+
+                    {files.length > 0 && (
+                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'center' }}>
+                            {files.map((file, index) => (
+                                <Chip
+                                    key={`${file.name}-${index}`}
+                                    icon={<InsertDriveFileIcon />}
+                                    label={`${file.name} (${(file.size / 1024).toFixed(2)} KB)`}
+                                    onDelete={() => handleClearFile(index)}
+                                    color="primary"
+                                    variant="outlined"
+                                    size="small"
+                                />
+                            ))}
+                            {files.length > 1 && (
+                                <Chip
+                                    label="Clear All"
+                                    onClick={handleClearAll}
+                                    color="error"
+                                    variant="outlined"
+                                    size="small"
+                                />
+                            )}
+                        </Box>
                     )}
 
                     {loading && (
                         <>
                             <LinearProgress sx={{ width: "100%" }} />
                             <Typography variant="body2" color="text.secondary">
-                                Converting...
+                                Converting {progress.current}/{progress.total}...
                             </Typography>
                         </>
                     )}
@@ -219,16 +270,18 @@ const CsvConverter = () => {
                         </Typography>
                     )}
 
-                    <Button
-                        variant="contained"
-                        size="large"
-                        onClick={handleConvert}
-                        disabled={loading || !file}
-                    >
-                        {loading ? "Converting..." : "Convert to Excel"}
-                    </Button>
+                    {convertedFiles.length === 0 && (
+                        <Button
+                            variant="contained"
+                            size="large"
+                            onClick={handleConvert}
+                            disabled={loading || files.length === 0}
+                        >
+                            {loading ? "Converting..." : `Convert ${files.length || ''} File${files.length !== 1 ? 's' : ''} to Excel`}
+                        </Button>
+                    )}
 
-                    {convertedFile && (
+                    {convertedFiles.length > 0 && (
                         <Button
                             variant="contained"
                             color="success"
@@ -236,7 +289,9 @@ const CsvConverter = () => {
                             startIcon={<DownloadIcon />}
                             onClick={handleDownload}
                         >
-                            Download {convertedFile.filename}
+                            {convertedFiles.length === 1
+                                ? `Download ${convertedFiles[0].filename}`
+                                : `Download ${convertedFiles.length} Files (ZIP)`}
                         </Button>
                     )}
                 </Stack>

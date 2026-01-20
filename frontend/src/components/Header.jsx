@@ -11,7 +11,7 @@ const Header = () => {
                     alt="Metro Physicians Logo"
                     sx={{ height: 60, mr: 2 }}
                 />
-                <Typography variant="h6">
+                <Typography variant="h5" fontWeight={400}>
                     CSV Converter
                 </Typography>
             </Toolbar>
