@@ -6,30 +6,75 @@ import {
     Stack,
     Divider,
     LinearProgress,
+    Chip,
+    Box,
 } from "@mui/material"
 import UploadFileIcon from "@mui/icons-material/UploadFile"
 import DownloadIcon from "@mui/icons-material/Download"
+import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile"
 import { useState } from "react"
 
 // API endpoint for CSV to Excel conversion
-const API_URL = "https://r01s9indk6.execute-api.us-west-2.amazonaws.com/prod"
+const API_URL = import.meta.env.VITE_API_URL
 
 /**
- * Body component - Main UI for CSV to Excel file conversion
+ * CsvConverter component - Main UI for CSV to Excel file conversion
  * Handles file selection, upload, conversion via API, and download of converted file
  */
-const Body = () => {
+const CsvConverter = () => {
     // State for selected file, loading status, error messages, and converted result
     const [file, setFile] = useState(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState("")
     const [convertedFile, setConvertedFile] = useState(null)
+    const [isDragging, setIsDragging] = useState(false)
 
     // Handles file input change - resets previous state when new file is selected
     const handleFileChange = (e) => {
         setFile(e.target.files[0] || null)
         setError("")
         setConvertedFile(null)
+    }
+
+    // Clears the selected file
+    const handleClearFile = () => {
+        setFile(null)
+        setError("")
+        setConvertedFile(null)
+    }
+
+    // Validates if a file is an accepted type
+    const isValidFileType = (file) => {
+        const validTypes = ['.csv', '.txt', 'text/csv', 'text/plain']
+        return validTypes.some(type =>
+            file.name.toLowerCase().endsWith(type) || file.type === type
+        )
+    }
+
+    // Handles drag over event
+    const handleDragOver = (e) => {
+        e.preventDefault()
+        setIsDragging(true)
+    }
+
+    // Handles drag leave event
+    const handleDragLeave = (e) => {
+        e.preventDefault()
+        setIsDragging(false)
+    }
+
+    // Handles file drop
+    const handleDrop = (e) => {
+        e.preventDefault()
+        setIsDragging(false)
+        const droppedFile = e.dataTransfer.files[0]
+        if (droppedFile && isValidFileType(droppedFile)) {
+            setFile(droppedFile)
+            setError("")
+            setConvertedFile(null)
+        } else if (droppedFile) {
+            setError("Please drop a CSV or TXT file")
+        }
     }
 
     // Handles file conversion by sending the selected file to the API
@@ -111,25 +156,52 @@ const Body = () => {
                 <Divider sx={{ my: 3 }} />
 
                 <Stack spacing={3} alignItems="center">
-                    <Button
-                        variant="outlined"
-                        component="label"
-                        startIcon={<UploadFileIcon />}
-                        size="large"
-                    >
-                        Select File
-                        <input
-                            type="file"
-                            hidden
-                            accept=".csv,.txt,text/csv,text/plain"
-                            onChange={handleFileChange}
+                    {!file ? (
+                        <Box
+                            onDragOver={handleDragOver}
+                            onDragLeave={handleDragLeave}
+                            onDrop={handleDrop}
+                            sx={{
+                                border: '2px dashed',
+                                borderColor: isDragging ? 'primary.main' : 'grey.400',
+                                borderRadius: 5,
+                                p: 2,
+                                textAlign: 'center',
+                                bgcolor: isDragging ? 'action.hover' : 'transparent',
+                                transition: 'all 0.2s ease',
+                                cursor: 'pointer',
+                                maxWidth: 400,
+                            }}
+                        >
+                            <UploadFileIcon sx={{ fontSize: 48, color: 'grey.500', mb: 1 }} />
+                            <Typography variant="body1" color="text.secondary" gutterBottom>
+                                Drag and drop your file here
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                                or
+                            </Typography>
+                            <Button
+                                variant="outlined"
+                                component="label"
+                                size="large"
+                            >
+                                Browse Files
+                                <input
+                                    type="file"
+                                    hidden
+                                    accept=".csv,.txt,text/csv,text/plain"
+                                    onChange={handleFileChange}
+                                />
+                            </Button>
+                        </Box>
+                    ) : (
+                        <Chip
+                            icon={<InsertDriveFileIcon />}
+                            label={`${file.name} (${(file.size / 1024).toFixed(2)} KB)`}
+                            onDelete={handleClearFile}
+                            color="primary"
+                            variant="outlined"
                         />
-                    </Button>
-
-                    {file && (
-                        <Typography variant="body2" color="text.secondary">
-                            {file.name} ({(file.size / 1024).toFixed(2)} KB)
-                        </Typography>
                     )}
 
                     {loading && (
@@ -173,4 +245,4 @@ const Body = () => {
     )
 }
 
-export default Body
+export default CsvConverter
