@@ -2,6 +2,7 @@ import json
 import base64
 import io
 import pandas as pd
+from openpyxl.utils import get_column_letter
 
 def lambda_handler(event, context):
     """
@@ -30,15 +31,33 @@ def lambda_handler(event, context):
         # Detect delimiter
         delimiter = detect_delimiter(file_content)
 
+        # If delimiter is ^, remove trailing ^ from each line to prevent empty column
+        if delimiter == '^':
+            lines = file_content.split('\n')
+            cleaned_lines = [line.rstrip('^') for line in lines]
+            file_content = '\n'.join(cleaned_lines)
+
         # Read CSV into pandas DataFrame
         df = pd.read_csv(io.StringIO(file_content), delimiter=delimiter, dtype=str)
 
         if df.empty:
             return error_response(400, "File is empty")
 
-        # Convert DataFrame to Excel
+        # Convert DataFrame to Excel with autofit column widths
         excel_buffer = io.BytesIO()
-        df.to_excel(excel_buffer, index=False, sheet_name="Sheet1")
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name="Sheet1")
+            worksheet = writer.sheets["Sheet1"]
+
+            # Autofit column widths
+            for col_idx, column in enumerate(df.columns, 1):
+                max_length = len(str(column))
+                for cell in df[column].astype(str):
+                    max_length = max(max_length, len(cell))
+                # Add a little extra space and cap at reasonable width
+                adjusted_width = min(max_length + 2, 50)
+                worksheet.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
+
         excel_buffer.seek(0)
 
         # Generate output filename
