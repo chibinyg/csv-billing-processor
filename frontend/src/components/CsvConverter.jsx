@@ -169,8 +169,8 @@ const CsvConverter = () => {
     }
 
     return (
-        <Container maxWidth="md" sx={{ mt: 6, mb: 6, flexGrow: 1 }}>
-            <Paper elevation={3} sx={{ p: 3 }}>
+        <Container maxWidth="md" sx={{ flexGrow: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Paper elevation={3} sx={{ p: 3, width: "100%" }}>
                 <Typography
                     variant="h6"
                     component="h1"
