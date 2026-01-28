@@ -8,6 +8,11 @@ import {
     LinearProgress,
     Chip,
     Box,
+    Dialog,
+    DialogTitle,
+    DialogContent,
+    DialogContentText,
+    DialogActions,
 } from "@mui/material"
 import UploadFileIcon from "@mui/icons-material/UploadFile"
 import DownloadIcon from "@mui/icons-material/Download"
@@ -26,15 +31,69 @@ const CsvConverter = () => {
     const [convertedFiles, setConvertedFiles] = useState([])
     const [isDragging, setIsDragging] = useState(false)
     const [progress, setProgress] = useState({ current: 0, total: 0 })
+    const [duplicateDialog, setDuplicateDialog] = useState({ open: false, duplicates: [], newFiles: [] })
+
+    // Checks for duplicate file names and returns { duplicates, nonDuplicates }
+    const checkDuplicates = (newFiles) => {
+        const existingNames = new Set(files.map(f => f.name))
+        const duplicates = []
+        const nonDuplicates = []
+
+        newFiles.forEach(file => {
+            if (existingNames.has(file.name)) {
+                duplicates.push(file)
+            } else {
+                nonDuplicates.push(file)
+            }
+        })
+
+        return { duplicates, nonDuplicates }
+    }
+
+    // Adds files, handling duplicates with dialog
+    const addFiles = (newFiles) => {
+        const validFiles = newFiles.filter(isValidFileType)
+        if (validFiles.length === 0) return
+
+        const { duplicates, nonDuplicates } = checkDuplicates(validFiles)
+
+        // Add non-duplicates immediately
+        if (nonDuplicates.length > 0) {
+            setFiles(prev => [...prev, ...nonDuplicates])
+            setConvertedFiles([])
+        }
+
+        // Show dialog for duplicates
+        if (duplicates.length > 0) {
+            setDuplicateDialog({ open: true, duplicates, newFiles: validFiles })
+        }
+
+        setError("")
+    }
+
+    // Handle replace action in duplicate dialog
+    const handleReplaceDuplicates = () => {
+        const { duplicates } = duplicateDialog
+        const duplicateNames = new Set(duplicates.map(f => f.name))
+
+        setFiles(prev => {
+            // Remove existing files with same names, then add the new duplicates
+            const filtered = prev.filter(f => !duplicateNames.has(f.name))
+            return [...filtered, ...duplicates]
+        })
+        setConvertedFiles([])
+        setDuplicateDialog({ open: false, duplicates: [], newFiles: [] })
+    }
+
+    // Handle cancel action in duplicate dialog
+    const handleCancelDuplicates = () => {
+        setDuplicateDialog({ open: false, duplicates: [], newFiles: [] })
+    }
 
     // Handles file input change - adds new files to existing selection
     const handleFileChange = (e) => {
-        const newFiles = Array.from(e.target.files).filter(isValidFileType)
-        if (newFiles.length > 0) {
-            setFiles(prev => [...prev, ...newFiles])
-            setError("")
-            setConvertedFiles([])
-        }
+        const newFiles = Array.from(e.target.files)
+        addFiles(newFiles)
         e.target.value = ""
     }
 
@@ -80,8 +139,7 @@ const CsvConverter = () => {
         const invalidCount = droppedFiles.length - validFiles.length
 
         if (validFiles.length > 0) {
-            setFiles(prev => [...prev, ...validFiles])
-            setConvertedFiles([])
+            addFiles(validFiles)
         }
         if (invalidCount > 0) {
             setError(`${invalidCount} file(s) skipped - only CSV and TXT files are accepted`)
@@ -207,7 +265,7 @@ const CsvConverter = () => {
                             width: '60%',
                         }}
                     >
-                        <UploadFileIcon sx={{ fontSize: 48, color: 'grey.500', mb: 1 }} />
+                        <UploadFileIcon sx={{ fontSize: 60, color: 'grey.500', mb: 1 }} />
                         <Typography variant="body1" color="text.secondary" gutterBottom>
                             Drop your files here (.csv, .txt)
                         </Typography>
@@ -218,6 +276,7 @@ const CsvConverter = () => {
                             variant="outlined"
                             component="label"
                             size="large"
+                            sx={{ textTransform: 'none' }}
                         >
                             Browse Files
                             <input
@@ -276,6 +335,7 @@ const CsvConverter = () => {
                             size="large"
                             onClick={handleConvert}
                             disabled={loading || files.length === 0}
+                            sx={{ textTransform: 'none' }}
                         >
                             {loading ? "Converting..." : `Convert ${files.length || ''} File${files.length !== 1 ? 's' : ''} to Excel`}
                         </Button>
@@ -288,6 +348,7 @@ const CsvConverter = () => {
                             size="large"
                             startIcon={<DownloadIcon />}
                             onClick={handleDownload}
+                            sx={{ textTransform: 'none' }}
                         >
                             {convertedFiles.length === 1
                                 ? `Download ${convertedFiles[0].filename}`
@@ -296,6 +357,23 @@ const CsvConverter = () => {
                     )}
                 </Stack>
             </Paper>
+
+            <Dialog open={duplicateDialog.open} onClose={handleCancelDuplicates}>
+                <DialogTitle>Duplicate File{duplicateDialog.duplicates.length > 1 ? 's' : ''} Detected</DialogTitle>
+                <DialogContent>
+                    <DialogContentText>
+                        The following file{duplicateDialog.duplicates.length > 1 ? 's already exist' : ' already exists'}:
+                        <br />
+                        <strong>{duplicateDialog.duplicates.map(f => f.name).join(', ')}</strong>
+                        <br /><br />
+                        Do you want to replace {duplicateDialog.duplicates.length > 1 ? 'them' : 'it'}?
+                    </DialogContentText>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={handleCancelDuplicates}>Cancel</Button>
+                    <Button onClick={handleReplaceDuplicates} variant="contained">Replace</Button>
+                </DialogActions>
+            </Dialog>
         </Container>
     )
 }
