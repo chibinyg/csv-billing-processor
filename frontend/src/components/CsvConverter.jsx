@@ -177,7 +177,7 @@ const CsvConverter = () => {
                     gutterBottom
                     textAlign="center"
                 >
-                    Upload CSV files and download as Excel
+                    Upload CSV, Validate & Download Excel
                 </Typography>
                 <Typography
                     variant="body1"
@@ -185,7 +185,7 @@ const CsvConverter = () => {
                     textAlign="center"
                     gutterBottom
                 >
-                    Fast CSV to Excel conversion
+                    Instant billing validation with Excel export — no data stored on server
                 </Typography>
 
                 <Divider sx={{ my: 3 }} />
@@ -204,7 +204,7 @@ const CsvConverter = () => {
                             bgcolor: isDragging ? 'action.hover' : 'transparent',
                             transition: 'all 0.2s ease',
                             cursor: 'pointer',
-                            maxWidth: 400,
+                            width: '60%',
                         }}
                     >
                         <UploadFileIcon sx={{ fontSize: 48, color: 'grey.500', mb: 1 }} />
