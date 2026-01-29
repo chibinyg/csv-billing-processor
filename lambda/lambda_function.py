@@ -2,7 +2,99 @@ import json
 import base64
 import io
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+# Style constants
+HEADER_FILL = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+HEADER_FONT = Font(color='FFFFFF', bold=True)
+DUPLICATE_FILL = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')
+
+
+def detect_duplicates(df):
+    """
+    Detect duplicate charges: same patient + same CPT + same DOS.
+    Returns a boolean Series indicating which rows are duplicates.
+    """
+    group_cols = ['PATIENTNAME', 'PROCEDURECODE', 'SERVICEDATE']
+
+    # Check if required columns exist
+    missing_cols = [col for col in group_cols if col not in df.columns]
+    if missing_cols:
+        # If columns missing, no duplicates can be detected
+        return pd.Series([False] * len(df)), 0
+
+    # Find rows where group size > 1 (duplicates)
+    group_sizes = df.groupby(group_cols)[group_cols[0]].transform('size')
+    duplicate_mask = group_sizes > 1
+
+    duplicate_count = duplicate_mask.sum()
+
+    return duplicate_mask, duplicate_count
+
+
+def create_excel_with_duplicates(df, duplicate_mask, duplicate_count):
+    """
+    Create Excel workbook with duplicate highlighting and summary sheet.
+    """
+    wb = Workbook()
+
+    # === Sheet 1: Billing Data ===
+    ws_data = wb.active
+    ws_data.title = "Billing Data"
+
+    # Write data
+    for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 1):
+        for c_idx, value in enumerate(row, 1):
+            cell = ws_data.cell(row=r_idx, column=c_idx, value=value)
+
+            # Header styling
+            if r_idx == 1:
+                cell.fill = HEADER_FILL
+                cell.font = HEADER_FONT
+            # Duplicate row highlighting (r_idx-2 because row 1 is header, pandas is 0-indexed)
+            elif r_idx > 1 and duplicate_mask.iloc[r_idx - 2]:
+                cell.fill = DUPLICATE_FILL
+
+    # Autofit columns
+    for col_idx, column in enumerate(df.columns, 1):
+        max_length = len(str(column))
+        for cell_value in df[column].astype(str):
+            max_length = max(max_length, len(str(cell_value)))
+        adjusted_width = min(max_length + 2, 50)
+        ws_data.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
+
+    # Freeze header row
+    ws_data.freeze_panes = 'A2'
+
+    # === Sheet 2: Summary ===
+    ws_summary = wb.create_sheet("Summary")
+    create_summary_sheet(ws_summary, len(df), duplicate_count)
+
+    return wb
+
+
+def create_summary_sheet(ws, total_count, duplicate_count):
+    """
+    Create summary sheet with duplicate statistics.
+    """
+    ws.append(['DUPLICATE DETECTION SUMMARY'])
+    ws['A1'].font = Font(bold=True, size=14)
+    ws.append([])
+
+    ws.append(['Metric', 'Count'])
+    ws['A3'].font = Font(bold=True)
+    ws['B3'].font = Font(bold=True)
+
+    ws.append(['Total Records', total_count])
+    ws.append(['Duplicate Records', duplicate_count])
+
+    # Autofit columns
+    ws.column_dimensions['A'].width = 20
+    ws.column_dimensions['B'].width = 15
+
 
 def lambda_handler(event, context):
     """
@@ -43,21 +135,20 @@ def lambda_handler(event, context):
         if df.empty:
             return error_response(400, "File is empty")
 
-        # Convert DataFrame to Excel with autofit column widths
+        # Remove trailer rows (Epic exports often have a "T" row at the end with record count)
+        # These rows have mostly empty values - filter out rows where first column is "T"
+        if 'GUARANTORACCOUNT' in df.columns:
+            df = df[df['GUARANTORACCOUNT'] != 'T']
+
+        # Detect duplicates
+        duplicate_mask, duplicate_count = detect_duplicates(df)
+
+        # Create Excel with duplicate highlighting
+        workbook = create_excel_with_duplicates(df, duplicate_mask, duplicate_count)
+
+        # Save to buffer
         excel_buffer = io.BytesIO()
-        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name="Sheet1")
-            worksheet = writer.sheets["Sheet1"]
-
-            # Autofit column widths
-            for col_idx, column in enumerate(df.columns, 1):
-                max_length = len(str(column))
-                for cell in df[column].astype(str):
-                    max_length = max(max_length, len(cell))
-                # Add a little extra space and cap at reasonable width
-                adjusted_width = min(max_length + 2, 50)
-                worksheet.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
-
+        workbook.save(excel_buffer)
         excel_buffer.seek(0)
 
         # Generate output filename

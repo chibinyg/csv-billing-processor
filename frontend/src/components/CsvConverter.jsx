@@ -235,7 +235,7 @@ const CsvConverter = () => {
                     gutterBottom
                     textAlign="center"
                 >
-                    Upload CSV, Validate & Download Excel
+                    Upload CSV, Validate and Download Excel
                 </Typography>
                 <Typography
                     variant="body1"
