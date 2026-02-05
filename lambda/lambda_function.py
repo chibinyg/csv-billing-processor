@@ -8,12 +8,11 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 # Style constants
-HEADER_FILL = PatternFill(fill_type='solid', fgColor='4472C4')
+HEADER_FILL = PatternFill(fill_type='solid', fgColor='1e40af')
 HEADER_FONT = Font(color='FFFFFF', bold=True)
 CHARGE_FILL = PatternFill(fill_type='solid', fgColor='C6EFCE')  # Green(Charge)
 DENY_FILL = PatternFill(fill_type='solid', fgColor='FFC7CE')  # Red(Deny)
 REVIEW_FILL = PatternFill(fill_type='solid', fgColor='FFEB9C')  # Yellow(Review)
-DUPLICATE_FILL = PatternFill(fill_type='solid', fgColor='FABF8F')  # Orange(Duplicate)
 THIN_BORDER = Border(
     left=Side(style='thin'),
     right=Side(style='thin'),
@@ -30,30 +29,10 @@ ACP_CODES = ['99497']
 UNLISTED_CODES = ['99499']
 
 
-def detect_duplicates(df):
-    """
-    Detect duplicate charges: same patient + same CPT + same DOS.
-    """
-    group_cols = ['PATIENTNAME', 'PROCEDURECODE', 'SERVICEDATE']
-
-    # Check if required columns exist
-    missing_cols = [col for col in group_cols if col not in df.columns]
-    if missing_cols:
-        # If columns missing, no duplicates can be detected
-        return pd.Series([False] * len(df)), 0
-
-    # Mark duplicates excluding the first occurrence
-    duplicate_mask = df.duplicated(subset=group_cols, keep='first')
-
-    duplicate_count = duplicate_mask.sum()
-
-    return duplicate_mask, duplicate_count
-
-
 def apply_charge_scrub(df):
     """
     Apply billing rules to determine CHARGE/DENY/REVIEW for each row.
-    Returns DataFrame with _Recommendation and _Notes columns added.
+    Returns tuple of (DataFrame with _Recommendation and _Notes columns, duplicate_count).
     """
     # Initialize columns
     df = df.copy()
@@ -64,7 +43,14 @@ def apply_charge_scrub(df):
     required_cols = ['PATIENTNAME', 'PROCEDURECODE',
                      'SERVICEDATE', 'BILLINGPROVIDER']
     if not all(col in df.columns for col in required_cols):
-        return df  # Can't scrub without required columns
+        return df, 0  # Can't scrub without required columns
+
+    # Rule 0: Detect and mark duplicates (same patient + CPT + DOS)
+    duplicate_mask = df.duplicated(
+        subset=['PATIENTNAME', 'PROCEDURECODE', 'SERVICEDATE'], keep='first')
+    duplicate_count = duplicate_mask.sum()
+    df.loc[duplicate_mask, '_Recommendation'] = 'DENY'
+    df.loc[duplicate_mask, '_Notes'] = 'Duplicate: same patient, CPT, and DOS'
 
     # Rule 1: Unlisted codes always DENY
     mask_99499 = df['PROCEDURECODE'].isin(UNLISTED_CODES)
@@ -154,7 +140,7 @@ def apply_charge_scrub(df):
                         df.loc[i, '_Recommendation'] = 'DENY'
                         df.loc[i, '_Notes'] = 'ACP by same provider as Initial'
 
-    return df
+    return df, duplicate_count
 
 
 def create_excel_with_scrub(df, duplicate_count):
@@ -174,19 +160,20 @@ def create_excel_with_scrub(df, duplicate_count):
             if r_idx == 1:
                 cell.fill = HEADER_FILL
                 cell.font = HEADER_FONT
-            elif r_idx > 1:
-                data_idx = r_idx - 2
-                recommendation = df.iloc[data_idx]['_Recommendation']
 
-                # Apply color based on recommendation
-                if recommendation == 'DENY':
-                    cell.fill = DENY_FILL
-                elif recommendation == 'REVIEW':
-                    cell.fill = REVIEW_FILL
-                elif recommendation == 'DUPLICATE':
-                    cell.fill = DUPLICATE_FILL
-                elif recommendation == 'CHARGE':
-                    cell.fill = CHARGE_FILL
+    # Apply color only to _Recommendation column
+    rec_col_idx = df.columns.get_loc('_Recommendation') + 1  # 1-indexed
+    for r_idx in range(2, len(df) + 2):  # Start at row 2 (after header)
+        data_idx = r_idx - 2
+        recommendation = df.iloc[data_idx]['_Recommendation']
+        cell = ws_data.cell(row=r_idx, column=rec_col_idx)
+
+        if recommendation == 'DENY':
+            cell.fill = DENY_FILL
+        elif recommendation == 'REVIEW':
+            cell.fill = REVIEW_FILL
+        elif recommendation == 'CHARGE':
+            cell.fill = CHARGE_FILL
 
     # Autofit columns
     for col_idx, column in enumerate(df.columns, 1):
@@ -240,7 +227,7 @@ def create_summary_sheet(ws, df, duplicate_count):
     ws.cell(row=row, column=1, value='Total Charges')
     ws.cell(row=row, column=2, value=total)
     row += 1
-    ws.cell(row=row, column=1, value='Total Patients')
+    ws.cell(row=row, column=1, value='Unique Patients')
     ws.cell(row=row, column=2, value=total_patients)
     row += 1
     ws.cell(row=row, column=1, value='Duplicates')
@@ -248,7 +235,7 @@ def create_summary_sheet(ws, df, duplicate_count):
     row += 2
 
     # === RECOMMENDATIONS ===
-    ws.cell(row=row, column=1, value='BY RECOMMENDATION').font = Font(bold=True)
+    ws.cell(row=row, column=1, value='RECOMMENDATION').font = Font(bold=True)
     row += 1
 
     charge_count = (df['_Recommendation'] == 'CHARGE').sum()
@@ -375,15 +362,8 @@ def lambda_handler(event, context):
         if 'GUARANTORACCOUNT' in df.columns:
             df = df[df['GUARANTORACCOUNT'] != 'T']
 
-        # Detect duplicates
-        duplicate_mask, duplicate_count = detect_duplicates(df)
-
-        # Apply charge scrubbing (adds _Recommendation, _Notes columns)
-        df = apply_charge_scrub(df)
-
-        # Mark duplicate rows (except first occurrence) with recommendation and note
-        df.loc[duplicate_mask, '_Recommendation'] = 'DUPLICATE'
-        df.loc[duplicate_mask, '_Notes'] = 'Same patient, CPT, and DOS as another charge'
+        # Apply charge scrubbing (adds _Recommendation, _Notes columns, detects duplicates)
+        df, duplicate_count = apply_charge_scrub(df)
 
         # Create Excel with scrub results
         workbook = create_excel_with_scrub(df, duplicate_count)
@@ -472,7 +452,7 @@ def parse_multipart(body, content_type):
 
 def detect_delimiter(content):
     """
-    Detect the file delimiter: ^ (EPIC billing), tab, or comma.
+    Detect the file delimiter: ^, tab, or comma.
     """
     first_line = content.split('\n')[0] if '\n' in content else content
 
