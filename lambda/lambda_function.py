@@ -161,19 +161,27 @@ def create_excel_with_scrub(df, duplicate_count):
                 cell.fill = HEADER_FILL
                 cell.font = HEADER_FONT
 
-    # Apply color only to _Recommendation column
-    rec_col_idx = df.columns.get_loc('_Recommendation') + 1  # 1-indexed
+    # Apply color to key clinical columns based on recommendation
+    color_columns = ['PATIENTNAME', 'PROCEDURECODE', 'SERVICEDATE',
+                     'BILLINGPROVIDER', '_Recommendation', '_Notes']
+    color_col_indices = [df.columns.get_loc(col) + 1 for col in color_columns
+                         if col in df.columns]
+
     for r_idx in range(2, len(df) + 2):  # Start at row 2 (after header)
         data_idx = r_idx - 2
         recommendation = df.iloc[data_idx]['_Recommendation']
-        cell = ws_data.cell(row=r_idx, column=rec_col_idx)
 
         if recommendation == 'DENY':
-            cell.fill = DENY_FILL
+            fill = DENY_FILL
         elif recommendation == 'REVIEW':
-            cell.fill = REVIEW_FILL
+            fill = REVIEW_FILL
         elif recommendation == 'CHARGE':
-            cell.fill = CHARGE_FILL
+            fill = CHARGE_FILL
+        else:
+            continue
+
+        for col_idx in color_col_indices:
+            ws_data.cell(row=r_idx, column=col_idx).fill = fill
 
     # Autofit columns
     for col_idx, column in enumerate(df.columns, 1):
