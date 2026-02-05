@@ -13,6 +13,7 @@ HEADER_FONT = Font(color='FFFFFF', bold=True)
 CHARGE_FILL = PatternFill(fill_type='solid', fgColor='C6EFCE')  # Green(Charge)
 DENY_FILL = PatternFill(fill_type='solid', fgColor='FFC7CE')  # Red(Deny)
 REVIEW_FILL = PatternFill(fill_type='solid', fgColor='FFEB9C')  # Yellow(Review)
+DATA_FILL = PatternFill(fill_type='solid', fgColor='FCE4B5')  # Orange(Lost Days)
 THIN_BORDER = Border(
     left=Side(style='thin'),
     right=Side(style='thin'),
@@ -143,7 +144,129 @@ def apply_charge_scrub(df):
     return df, duplicate_count
 
 
-def create_excel_with_scrub(df, duplicate_count):
+def parse_service_dates(series):
+    """
+    Parse SERVICEDATE series handling mixed formats.
+    Tries default parsing first, then falls back to %m%d%Y for unparsed values.
+    """
+    dates = pd.to_datetime(series, errors='coerce')
+    mask = dates.isna() & series.notna()
+    if mask.any():
+        dates[mask] = pd.to_datetime(series[mask], format='%m%d%Y', errors='coerce')
+    return dates
+
+
+def detect_lost_days(df):
+    """
+    Analyze DataFrame to find missing service days for each patient.
+    Returns a list of dicts sorted by lost_days descending.
+    """
+    if 'PATIENTNAME' not in df.columns or 'SERVICEDATE' not in df.columns:
+        return []
+
+    results = []
+    for patient, group in df.groupby('PATIENTNAME'):
+        dates = parse_service_dates(group['SERVICEDATE']).dropna()
+        unique_dates = dates.dt.normalize().unique()
+
+        if len(unique_dates) < 2:
+            continue
+
+        min_date = unique_dates.min()
+        max_date = unique_dates.max()
+        full_range = pd.date_range(start=min_date, end=max_date, freq='D')
+
+        service_date_set = set(unique_dates)
+        missing_dates = sorted([d for d in full_range if d not in service_date_set])
+
+        lost_days = len(missing_dates)
+        if lost_days > 0:
+            results.append({
+                'patient_name': patient,
+                'first_dos': min_date,
+                'last_dos': max_date,
+                'total_days': len(full_range),
+                'service_days': len(unique_dates),
+                'lost_days': lost_days,
+                'missing_dates': missing_dates
+            })
+
+    results.sort(key=lambda x: x['lost_days'], reverse=True)
+    return results
+
+
+def create_lost_days_sheet(ws, lost_days_data):
+    """
+    Populate the Lost Days worksheet with gap analysis per patient.
+    """
+    row = 1
+    ws.cell(row=row, column=1, value='LOST DAYS ANALYSIS').font = Font(
+        bold=True, size=14)
+    row += 2
+
+    # Summary stats
+    total_patients_with_gaps = len(lost_days_data)
+    total_lost_days = sum(d['lost_days'] for d in lost_days_data)
+
+    ws.cell(row=row, column=1, value='Patients with Gaps')
+    ws.cell(row=row, column=2, value=total_patients_with_gaps)
+    row += 1
+    ws.cell(row=row, column=1, value='Total Lost Days')
+    ws.cell(row=row, column=2, value=total_lost_days)
+    row += 2
+
+    # Table headers
+    headers = ['Patient Name', 'First DOS', 'Last DOS', 'Total Days',
+               'Service Days', 'Lost Days', 'Missing Dates']
+
+    for c_idx, header in enumerate(headers, 1):
+        cell = ws.cell(row=row, column=c_idx, value=header)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.border = THIN_BORDER
+    header_row = row
+    row += 1
+
+    if not lost_days_data:
+        ws.cell(row=row, column=1,
+                value='No lost days detected - all patients have continuous service dates.')
+        ws.cell(row=row, column=1).font = Font(italic=True, color='666666')
+    else:
+        for entry in lost_days_data:
+            missing_str = ', '.join(
+                d.strftime('%m/%d/%Y') for d in entry['missing_dates'])
+
+            values = [
+                entry['patient_name'],
+                entry['first_dos'].strftime('%m/%d/%Y'),
+                entry['last_dos'].strftime('%m/%d/%Y'),
+                entry['total_days'],
+                entry['service_days'],
+                entry['lost_days'],
+                missing_str
+            ]
+
+            for c_idx, value in enumerate(values, 1):
+                cell = ws.cell(row=row, column=c_idx, value=value)
+                cell.border = THIN_BORDER
+                cell.fill = DATA_FILL
+
+            row += 1
+
+    # Column widths
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['B'].width = 14
+    ws.column_dimensions['C'].width = 14
+    ws.column_dimensions['D'].width = 12
+    ws.column_dimensions['E'].width = 14
+    ws.column_dimensions['F'].width = 12
+    ws.column_dimensions['G'].width = 60
+
+    # Freeze below header
+    ws.freeze_panes = f'A{header_row + 1}'
+
+
+def create_excel_with_scrub(df, duplicate_count, lost_days_data):
     """
     Create Excel workbook with scrub recommendations and duplicate highlighting.
     """
@@ -199,6 +322,10 @@ def create_excel_with_scrub(df, duplicate_count):
     ws_summary = wb.create_sheet("Summary")
     create_summary_sheet(ws_summary, df, duplicate_count)
 
+    # Lost Days sheet
+    ws_lost = wb.create_sheet("Lost Days")
+    create_lost_days_sheet(ws_lost, lost_days_data)
+
     return wb
 
 
@@ -215,11 +342,11 @@ def create_summary_sheet(ws, df, duplicate_count):
 
     # Date range
     if 'SERVICEDATE' in df.columns:
-        dates = pd.to_datetime(df['SERVICEDATE'], errors='coerce')
+        dates = parse_service_dates(df['SERVICEDATE'])
         min_date = dates.min()
         max_date = dates.max()
         if pd.notna(min_date) and pd.notna(max_date):
-            ws.cell(row=row, column=1, value='Date Range:')
+            ws.cell(row=row, column=1, value='Date Range')
             ws.cell(row=row, column=2,
                     value=f"{min_date.strftime('%m/%d/%Y')} - {max_date.strftime('%m/%d/%Y')}")
             row += 2
@@ -265,13 +392,11 @@ def create_summary_sheet(ws, df, duplicate_count):
 
     # === BY PROVIDER ===
     if 'BILLINGPROVIDER' in df.columns:
-        ws.cell(row=row, column=1, value='BY PROVIDER').font = Font(bold=True)
-        row += 1
-        ws.cell(row=row, column=1, value='Provider').font = Font(bold=True)
-        ws.cell(row=row, column=2, value='Charges').font = Font(bold=True)
-        ws.cell(row=row, column=3, value='CHARGE').font = Font(bold=True)
-        ws.cell(row=row, column=4, value='DENY').font = Font(bold=True)
-        ws.cell(row=row, column=5, value='REVIEW').font = Font(bold=True)
+        for c_idx, header in enumerate(['Billing Provider', 'Count', 'CHARGE', 'DENY', 'REVIEW'], 1):
+            cell = ws.cell(row=row, column=c_idx, value=header)
+            cell.fill = HEADER_FILL
+            cell.font = HEADER_FONT
+            cell.border = THIN_BORDER
         row += 1
 
         provider_stats = df.groupby('BILLINGPROVIDER').agg(
@@ -282,23 +407,22 @@ def create_summary_sheet(ws, df, duplicate_count):
         ).reset_index()
 
         for _, prow in provider_stats.iterrows():
-            ws.cell(row=row, column=1, value=prow['BILLINGPROVIDER'])
-            ws.cell(row=row, column=2, value=prow['Charges'])
-            ws.cell(row=row, column=3, value=prow['CHARGE'])
-            ws.cell(row=row, column=4, value=prow['DENY'])
-            ws.cell(row=row, column=5, value=prow['REVIEW'])
+            values = [prow['BILLINGPROVIDER'], prow['Charges'],
+                      prow['CHARGE'], prow['DENY'], prow['REVIEW']]
+            for c_idx, value in enumerate(values, 1):
+                cell = ws.cell(row=row, column=c_idx, value=value)
+                cell.border = THIN_BORDER
+                cell.fill = DATA_FILL
             row += 1
         row += 1
 
     # === BY CPT CODE ===
     if 'PROCEDURECODE' in df.columns:
-        ws.cell(row=row, column=1, value='BY CPT CODE').font = Font(bold=True)
-        row += 1
-        ws.cell(row=row, column=1, value='CPT').font = Font(bold=True)
-        ws.cell(row=row, column=2, value='Count').font = Font(bold=True)
-        ws.cell(row=row, column=3, value='CHARGE').font = Font(bold=True)
-        ws.cell(row=row, column=4, value='DENY').font = Font(bold=True)
-        ws.cell(row=row, column=5, value='REVIEW').font = Font(bold=True)
+        for c_idx, header in enumerate(['CPT', 'Count', 'CHARGE', 'DENY', 'REVIEW'], 1):
+            cell = ws.cell(row=row, column=c_idx, value=header)
+            cell.fill = HEADER_FILL
+            cell.font = HEADER_FONT
+            cell.border = THIN_BORDER
         row += 1
 
         cpt_stats = df.groupby('PROCEDURECODE').agg(
@@ -309,11 +433,12 @@ def create_summary_sheet(ws, df, duplicate_count):
         ).reset_index().sort_values('Count', ascending=False)
 
         for _, crow in cpt_stats.iterrows():
-            ws.cell(row=row, column=1, value=crow['PROCEDURECODE'])
-            ws.cell(row=row, column=2, value=crow['Count'])
-            ws.cell(row=row, column=3, value=crow['CHARGE'])
-            ws.cell(row=row, column=4, value=crow['DENY'])
-            ws.cell(row=row, column=5, value=crow['REVIEW'])
+            values = [crow['PROCEDURECODE'], crow['Count'],
+                      crow['CHARGE'], crow['DENY'], crow['REVIEW']]
+            for c_idx, value in enumerate(values, 1):
+                cell = ws.cell(row=row, column=c_idx, value=value)
+                cell.border = THIN_BORDER
+                cell.fill = DATA_FILL
             row += 1
 
     # Autofit columns
@@ -373,8 +498,11 @@ def lambda_handler(event, context):
         # Apply charge scrubbing (adds _Recommendation, _Notes columns, detects duplicates)
         df, duplicate_count = apply_charge_scrub(df)
 
+        # Detect lost days (gaps in service dates per patient)
+        lost_days_data = detect_lost_days(df)
+
         # Create Excel with scrub results
-        workbook = create_excel_with_scrub(df, duplicate_count)
+        workbook = create_excel_with_scrub(df, duplicate_count, lost_days_data)
 
         # Save to buffer
         excel_buffer = io.BytesIO()
